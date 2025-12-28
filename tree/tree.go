@@ -2,7 +2,6 @@ package tree
 
 import (
 	"github.com/ethereum/go-verkle"
-	"github.com/ethereum/go-verkle/verkle"
 )
 
 // a verkle node exists at every node of the tree, pointing to children, storing values, generate commitments
@@ -51,34 +50,72 @@ import (
 * Like any nodes there would be internal nodes and leaf nodes. here the internal nodes are commitments hashed.
  */
 
-const NodeWidth uint16 = 256
-const StemSize uint8 = 31
-
 type (
 	Node             verkle.VerkleNode
 	ResolverFunction verkle.NodeResolverFn
+	proof            verkle.ProofElements
 )
 
-type SimpleVerkleNode struct {
-	stemSize   byte            //
-	values     map[byte][]byte // leaf
-	children   map[byte][]SimpleVerkleNode
-	commitment verkle.Point
-}
+type (
+	LeafNode struct {
+		stem       verkle.Stem   // key = stem(31 bytes) + suffix(1 byte)
+		values     [][]byte      // list of byte buffers
+		commitment *verkle.Point // C00
+		depth      byte
+		c1, c2     *verkle.Point
+		// {c1: commitment to values[], c2: commitment to extentions/ continuations}
+		// c1 is something valid. Then why tf c2 ? There comes another field in this struct:
+		proofOfAbsenseStub bool
+		// The leafs represent sparse keys; some values may be missing
+		// in a stateless client, you want to handle absense or partial presence of keys and future extensions
+		// Without having the full state and having small witnesses, this field can control
+		// the POA: {c1, c1, (IPA or KZG) opening proofs, path proof, claim}
 
-func createNode(depth byte) *SimpleVerkleNode {
-	return &SimpleVerkleNode{
-		stemSize: StemSize,
-		values:   make(map[byte][]byte),
-		children: make(map[byte][]SimpleVerkleNode),
+		/* case A: stem exists but value is missing
+		* The prover sends (c1, an opening proof at the suffix saying value claimed = 0)
+		* The verifier checks (a valid c1 commitment, valid opening proof, value at suffix is exactly 0)
+		* FAQ: opening proof says that taht the value at an index (suffix in this case) is exactly what its told
+		*
+		* case B: no stem exists at all
+		* its not possible to prove that there is no leaf at all. So we need both the commitments (c1, c2)
+		* and then we just mark the leaf with the poaStub having {c1: commit to a zero polynomial [p(x)=0],
+		* c2: commitment to an empty metadata.
+		* Without c2, fake structuring of leaf and broken extension logic would be a risk.
+		 */
 	}
-}
+
+	InternalNode struct {
+		children   []Node
+		commitment *verkle.Point
+		depth      byte
+		cow        map[byte]*verkle.Point
+	}
+)
+
+/*
+* @params these constants are for defining a shallower and wider tree for ethereum.
+ */
+const (
+	KeySize = 32
+	// in ethereum 20 bytes addresses are hashed to 32 bytes(256 bit) for stateless execution,
+	// storage slots are already 32 bytes and everything in state trie is keccak256()
+	// key[0], key[1]... key[32] can be used to navigate or index
+	LeafValueSize = 32
+	// Account fields and storage slot values are standardized to 32 bytes
+	NodeWidth         = 256 // number of slots for each node
+	NodeBitWidth byte = 8
+	StemSize          = 31
+	// it is most important to realise that we only walk 31 bytes deep and leave the last byte
+	// as the suffix
+)
 
 // find which child to look at in a node, this is the key function to navigate in the tree
-func keyIndex(key []byte) byte {
+func keyIndex(key []byte) verkle.Stem {
 	return verkle.KeyToStem(key)
 }
 
-func (node *SimpleVerkleNode) Insert(key []byte, value []byte, rf ResolverFunction) {
-
+func splitKey(key []byte) ([]byte, byte) {
+	stem := verkle.KeyToStem(key)
+	suffix := key[len(key)-1]
+	return stem, suffix
 }
